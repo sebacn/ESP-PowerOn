@@ -42,11 +42,19 @@ ESP-PowerOn is a small PlatformIO sketch with its own web page, for a device tha
 
 ## What the firmware does
 
-The sketch in this repository is the base ESP32 firmware for that device:
+The web interface has three pages, and every page asks for a login (HTTP basic authentication).
 
-- Hosts a web page with **Tap**, **Press**, and **Release**. Tap holds the button for a short time, then releases it. Press and Release move the servo and leave it there.
-- Reads the photoresistor and shows **Power on** or **Power off**, plus the raw light reading, so the threshold can be tuned to the LED.
-- Joins the Wi-Fi network in `include/secrets.h` (or `build_flags` in `platformio.ini`). If that network is missing, it starts an access point named `ESP-PowerOn`.
+- **Main** shows the date and time (after NTP sync), uptime, IP address, and Wi-Fi name. The power-LED indicator is green when the photoresistor reads the PC as on and gray when it reads off. **Enable PC** moves the servo to the push angle, holds it, then returns to the initial angle.
+- **Settings** sets the servo initial angle, push angle, and hold time in seconds. In access-point mode it also shows the Wi-Fi name and password used to join a network. SSL can be turned on after a PEM certificate and private key are uploaded. The login user and password are changed here too.
+- **Logs** is a time series of power-LED on/off changes and power-button pushes and releases. Newest events are first. Rows use the device clock once it has synced; earlier rows show uptime.
+
+On first boot the login is `admin` / `esp-poweron` unless `include/secrets.h` defines `AUTH_USER` and `AUTH_PASSWORD`. The device joins the Wi-Fi network saved on the settings page, or the one in `include/secrets.h` if nothing has been saved yet. If that network is missing, it starts an access point named `ESP-PowerOn` (password `esp-poweron`) at http://192.168.4.1.
+
+HTTPS listens on port 443 when SSL is enabled and both PEM files are stored. HTTP on port 80 then redirects to HTTPS. A self-signed certificate makes the browser show a warning. Generate a test pair with:
+
+```bash
+openssl req -x509 -newkey rsa:2048 -keyout key.pem -out cert.pem -days 3650 -nodes -subj "/CN=esp-poweron"
+```
 
 ## Hardware
 
@@ -59,14 +67,14 @@ The sketch in this repository is the base ESP32 firmware for that device:
 
 GPIO 34 is an ADC1 pin. ADC2 pins stop working while Wi-Fi is on, so keep the photoresistor on ADC1 (GPIO 32–39 on the classic ESP32).
 
-With the LED off and on, compare the light reading on the web page and set `kPowerOnThreshold` in `include/config.h` between those two values. If a brighter LED makes the reading fall, set `kPowerOnWhenAbove` to `false` or swap the photoresistor and the 10 kΩ resistor. Servo travel is `kServoReleaseAngle` and `kServoPressAngle`.
+With the LED off and on, compare the `adc` field from `/api/status` and set `kPowerOnThreshold` in `include/config.h` between those two values. If a brighter LED makes the reading fall, set `kPowerOnWhenAbove` to `false` or swap the photoresistor and the 10 kΩ resistor. Starting servo angles are `kDefaultRestAngle` and `kDefaultPushAngle`; the settings page stores the angles actually used. The clock uses the POSIX timezone in `kTimeZone` (`UTC0` by default).
 
 ## Open in VS Code with PlatformIO
 
 1. Install [VS Code](https://code.visualstudio.com/) and the [PlatformIO IDE](https://platformio.org/install/ide?install=vscode) extension.
 2. Open this folder. PlatformIO uses `platformio.ini` at the repository root. The recommended extension is listed in `.vscode/extensions.json`.
-3. Copy `include/secrets.h.example` to `include/secrets.h` and set the Wi-Fi name and password. Leave the SSID empty to use only the access point (password `esp-poweron`, address http://192.168.4.1).
-4. Build, upload, and open the serial monitor from the PlatformIO toolbar. The monitor prints the IP address. On the station network the page is also at http://esp-poweron.local when mDNS works.
+3. Copy `include/secrets.h.example` to `include/secrets.h` and set the Wi-Fi name and password. Leave the SSID empty to use only the access point (password `esp-poweron`, address http://192.168.4.1), then enter the network on the settings page.
+4. Build, upload, and open the serial monitor from the PlatformIO toolbar. The monitor prints the IP address and the login user. On the station network the page is also at http://esp-poweron.local when mDNS works. Sign in with `admin` / `esp-poweron` until you change it.
 
 From a terminal, with the [PlatformIO Core](https://docs.platformio.org/en/latest/core/installation.html) on your path:
 
@@ -83,9 +91,12 @@ The default board is `esp32dev` (classic ESP32). Change `board` in `platformio.i
 | Path | Purpose |
 | --- | --- |
 | `platformio.ini` | PlatformIO environment: ESP32, Arduino framework, ESP32Servo |
-| `src/main.cpp` | Wi-Fi, web server, servo, photoresistor |
-| `include/config.h` | Pins, servo angles, LED threshold |
-| `include/secrets.h` | Wi-Fi credentials (not committed; see `secrets.h.example`) |
+| `src/main.cpp` | Startup |
+| `src/device.cpp` | Wi-Fi, servo, photoresistor, clock |
+| `src/web_ui.cpp` | Pages, settings, logs, basic authentication |
+| `src/https_server.cpp` | HTTPS server used when SSL is enabled |
+| `include/config.h` | Pins, default angles, LED threshold, timezone |
+| `include/secrets.h` | Optional first-boot Wi-Fi and login (not committed; see `secrets.h.example`) |
 | `lib/` | Local libraries, if you add any |
 | `test/` | PlatformIO tests, if you add any |
 
