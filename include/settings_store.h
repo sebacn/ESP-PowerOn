@@ -11,6 +11,11 @@ struct Settings {
   bool sslEnabled;
   char authUser[32];
   char authPassword[65];
+  char haHost[96];
+  char cfAccessId[128];
+  char cfAccessSecret[256];
+  char mqttUser[64];
+  char mqttPassword[65];
 };
 
 void settingsBegin();

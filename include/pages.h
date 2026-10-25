@@ -51,6 +51,7 @@ static const char kMainPage[] PROGMEM = R"HTML(<!DOCTYPE html>
   <dt>Uptime</dt><dd id="uptime">—</dd>
   <dt>IP address</dt><dd id="ip">—</dd>
   <dt>Wi-Fi</dt><dd id="wifi">—</dd>
+  <dt>MQTT</dt><dd id="mqtt">—</dd>
 </dl>
 <section class="status">
   <div id="led" class="led"></div>
@@ -81,6 +82,7 @@ async function refresh() {
   document.getElementById("uptime").textContent = formatUptime(status.uptimeSec);
   document.getElementById("ip").textContent = status.ip || "—";
   document.getElementById("wifi").textContent = status.wifi || "—";
+  document.getElementById("mqtt").textContent = status.mqtt || "—";
   var led = document.getElementById("led");
   led.className = status.powerOn ? "led on" : "led";
   document.getElementById("led-label").textContent = status.powerOn ? "ON" : "OFF";
@@ -123,12 +125,18 @@ static const char kSettingsPage[] PROGMEM = R"HTML(<!DOCTYPE html>
 <label>Push angle <input id="push" type="number" min="0" max="180" step="1"></label>
 <label>Hold time (seconds) <input id="hold" type="number" min="1" max="30" step="1"></label>
 <p class="hint">Enable PC moves the servo to the push angle, waits, then returns to the initial angle.</p>
+<h2>Wi-Fi</h2>
+<label>Wi-Fi name <input id="ssid" type="text" maxlength="32" autocomplete="off"></label>
+<label>Wi-Fi password <input id="wifi-password" type="password" maxlength="64" placeholder="Leave blank to keep the current password" autocomplete="off"></label>
+<p class="hint">Saving a different network restarts the device and joins it.</p>
+<h2>Home Assistant MQTT</h2>
+<label>Home Assistant server host <input id="ha-host" type="text" maxlength="95" placeholder="mqtt.example.com" autocomplete="off"></label>
+<label>CF-Access-Client-Id <input id="cf-id" type="text" maxlength="127" autocomplete="off"></label>
+<label>CF-Access-Client-Secret <input id="cf-secret" type="password" maxlength="255" placeholder="Leave blank to keep the current secret" autocomplete="off"></label>
+<label>MQTT user <input id="mqtt-user" type="text" maxlength="63" autocomplete="off"></label>
+<label>MQTT password <input id="mqtt-password" type="password" maxlength="64" placeholder="Leave blank to keep the current password" autocomplete="off"></label>
+<p class="hint">The device opens MQTT over WebSockets (WSS, port 443, path /mqtt). Cloudflare Access headers are sent on that handshake, then the MQTT user and password sign in to the broker. Put a path in the host if it is not /mqtt, for example mqtt.example.com/ws.</p>
 <h2>Web server</h2>
-<section id="wifi-section" hidden>
-  <p class="hint">Wi-Fi settings are available while the device is in access-point mode.</p>
-  <label>Wi-Fi name <input id="ssid" type="text" maxlength="32" autocomplete="off"></label>
-  <label>Wi-Fi password <input id="wifi-password" type="password" maxlength="64" placeholder="Leave blank to keep the current password" autocomplete="off"></label>
-</section>
 <label class="check"><input id="ssl" type="checkbox"> Enable SSL</label>
 <p id="ssl-state" class="hint"></p>
 <label>Certificate <input id="cert-file" type="file" accept=".pem,.crt,.cer"></label>
@@ -153,7 +161,9 @@ async function load() {
   document.getElementById("ssl").checked = !!settings.sslEnabled;
   document.getElementById("user").value = settings.authUser || "";
   document.getElementById("ssid").value = settings.wifiSsid || "";
-  document.getElementById("wifi-section").hidden = !settings.apMode;
+  document.getElementById("ha-host").value = settings.haHost || "";
+  document.getElementById("cf-id").value = settings.cfAccessId || "";
+  document.getElementById("mqtt-user").value = settings.mqttUser || "";
   var parts = [];
   parts.push(settings.certStored ? "Certificate stored." : "Certificate missing.");
   parts.push(settings.keyStored ? "Private key stored." : "Private key missing.");
@@ -183,11 +193,16 @@ document.getElementById("save").addEventListener("click", async function () {
   body.set("authUser", document.getElementById("user").value);
   var authPassword = document.getElementById("auth-password").value;
   if (authPassword) body.set("authPassword", authPassword);
-  if (!document.getElementById("wifi-section").hidden) {
-    body.set("wifiSsid", document.getElementById("ssid").value);
-    var wifiPassword = document.getElementById("wifi-password").value;
-    if (wifiPassword) body.set("wifiPassword", wifiPassword);
-  }
+  body.set("wifiSsid", document.getElementById("ssid").value);
+  var wifiPassword = document.getElementById("wifi-password").value;
+  if (wifiPassword) body.set("wifiPassword", wifiPassword);
+  body.set("haHost", document.getElementById("ha-host").value);
+  body.set("cfAccessId", document.getElementById("cf-id").value);
+  var cfSecret = document.getElementById("cf-secret").value;
+  if (cfSecret) body.set("cfAccessSecret", cfSecret);
+  body.set("mqttUser", document.getElementById("mqtt-user").value);
+  var mqttPassword = document.getElementById("mqtt-password").value;
+  if (mqttPassword) body.set("mqttPassword", mqttPassword);
   if (document.getElementById("ssl").checked) body.set("sslEnabled", "1");
   var response = await fetch("/api/settings", {
     method: "POST",

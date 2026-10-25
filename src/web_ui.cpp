@@ -12,6 +12,7 @@
 #include "device.h"
 #include "event_log.h"
 #include "https_server.h"
+#include "mqtt_wss.h"
 #include "pages.h"
 #include "settings_store.h"
 #include "storage.h"
@@ -95,7 +96,7 @@ bool formValue(const char* body, const char* key, char* out, size_t outLen, bool
     const size_t pairLen = amp ? static_cast<size_t>(amp - cursor) : std::strlen(cursor);
     const char* eq = static_cast<const char*>(std::memchr(cursor, '=', pairLen));
     if (eq && static_cast<size_t>(eq - cursor) == keyLen && std::strncmp(cursor, key, keyLen) == 0) {
-      char raw[256];
+      char raw[768];
       const size_t valueLen = pairLen - static_cast<size_t>(eq + 1 - cursor);
       if (valueLen >= sizeof(raw)) {
         return false;
@@ -172,6 +173,10 @@ WebResult statusResult() {
   appendJsonString(body, snap.ip);
   body += ",\"wifi\":";
   appendJsonString(body, snap.wifi);
+  char mqtt[24];
+  mqttStatus(mqtt, sizeof(mqtt));
+  body += ",\"mqtt\":";
+  appendJsonString(body, mqtt);
   body += "}";
   WebResult result;
   result.type = "application/json";
@@ -204,6 +209,16 @@ WebResult settingsResult() {
   body += storageExists("/key.pem") ? "true" : "false";
   body += ",\"authUser\":";
   appendJsonString(body, settings.authUser);
+  body += ",\"haHost\":";
+  appendJsonString(body, settings.haHost);
+  body += ",\"cfAccessId\":";
+  appendJsonString(body, settings.cfAccessId);
+  body += ",\"cfSecretSet\":";
+  body += settings.cfAccessSecret[0] != '\0' ? "true" : "false";
+  body += ",\"mqttUser\":";
+  appendJsonString(body, settings.mqttUser);
+  body += ",\"mqttPasswordSet\":";
+  body += settings.mqttPassword[0] != '\0' ? "true" : "false";
   body += "}";
   WebResult result;
   result.type = "application/json";
@@ -265,6 +280,11 @@ WebResult saveSettings(const char* body) {
   char authPassword[65];
   char ssid[33];
   char wifiPassword[65];
+  char haHost[96];
+  char cfAccessId[128];
+  char cfAccessSecret[256];
+  char mqttUser[64];
+  char mqttPassword[65];
   bool hasRest = false;
   bool hasPush = false;
   bool hasHold = false;
@@ -273,6 +293,11 @@ WebResult saveSettings(const char* body) {
   bool hasSsid = false;
   bool hasWifiPassword = false;
   bool hasSsl = false;
+  bool hasHaHost = false;
+  bool hasCfId = false;
+  bool hasCfSecret = false;
+  bool hasMqttUser = false;
+  bool hasMqttPassword = false;
   char ignored[8];
 
   if (!formValue(body, "restAngle", restText, sizeof(restText), &hasRest) ||
@@ -282,6 +307,11 @@ WebResult saveSettings(const char* body) {
       !formValue(body, "authPassword", authPassword, sizeof(authPassword), &hasAuthPassword) ||
       !formValue(body, "wifiSsid", ssid, sizeof(ssid), &hasSsid) ||
       !formValue(body, "wifiPassword", wifiPassword, sizeof(wifiPassword), &hasWifiPassword) ||
+      !formValue(body, "haHost", haHost, sizeof(haHost), &hasHaHost) ||
+      !formValue(body, "cfAccessId", cfAccessId, sizeof(cfAccessId), &hasCfId) ||
+      !formValue(body, "cfAccessSecret", cfAccessSecret, sizeof(cfAccessSecret), &hasCfSecret) ||
+      !formValue(body, "mqttUser", mqttUser, sizeof(mqttUser), &hasMqttUser) ||
+      !formValue(body, "mqttPassword", mqttPassword, sizeof(mqttPassword), &hasMqttPassword) ||
       !formValue(body, "sslEnabled", ignored, sizeof(ignored), &hasSsl)) {
     return jsonResult(400, false, false, "A setting is too long.");
   }
@@ -305,9 +335,19 @@ WebResult saveSettings(const char* body) {
   if (hasAuthPassword && authPassword[0] != '\0' && std::strlen(authPassword) < 4) {
     return jsonResult(400, false, false, "Login password must be at least 4 characters.");
   }
-  const DeviceSnapshot snap = deviceSnapshot();
-  if (snap.apMode && hasWifiPassword && wifiPassword[0] != '\0' && std::strlen(wifiPassword) < 8) {
+  if (hasWifiPassword && wifiPassword[0] != '\0' && std::strlen(wifiPassword) < 8) {
     return jsonResult(400, false, false, "Wi-Fi password must be at least 8 characters.");
+  }
+  char parsedHost[96];
+  char parsedPath[64];
+  if (hasHaHost && !mqttParseEndpoint(haHost, parsedHost, sizeof(parsedHost), parsedPath, sizeof(parsedPath))) {
+    return jsonResult(400, false, false, "Enter the Home Assistant host as a name, such as mqtt.example.com.");
+  }
+  if ((hasCfId && std::strpbrk(cfAccessId, "\r\n") != nullptr) ||
+      (hasCfSecret && std::strpbrk(cfAccessSecret, "\r\n") != nullptr) ||
+      (hasMqttUser && std::strpbrk(mqttUser, "\r\n") != nullptr) ||
+      (hasMqttPassword && std::strpbrk(mqttPassword, "\r\n") != nullptr)) {
+    return jsonResult(400, false, false, "MQTT and Cloudflare values cannot contain line breaks.");
   }
   if (hasSsl && (!storageExists("/cert.pem") || !storageExists("/key.pem"))) {
     return jsonResult(400, false, false, "Upload a certificate and a private key before enabling SSL.");
@@ -326,7 +366,7 @@ WebResult saveSettings(const char* body) {
     std::strncpy(next.authPassword, authPassword, sizeof(next.authPassword) - 1);
     next.authPassword[sizeof(next.authPassword) - 1] = '\0';
   }
-  if (snap.apMode && hasSsid) {
+  if (hasSsid) {
     if (std::strcmp(ssid, next.wifiSsid) != 0) {
       wifiChanged = true;
     }
@@ -337,6 +377,44 @@ WebResult saveSettings(const char* body) {
       std::strncpy(next.wifiPassword, wifiPassword, sizeof(next.wifiPassword) - 1);
       next.wifiPassword[sizeof(next.wifiPassword) - 1] = '\0';
     }
+  }
+  if (hasHaHost) {
+    std::strncpy(next.haHost, haHost, sizeof(next.haHost) - 1);
+    next.haHost[sizeof(next.haHost) - 1] = '\0';
+  }
+  if (hasCfId && cfAccessId[0] == '\0') {
+    next.cfAccessId[0] = '\0';
+    next.cfAccessSecret[0] = '\0';
+  } else {
+    if (hasCfId) {
+      std::strncpy(next.cfAccessId, cfAccessId, sizeof(next.cfAccessId) - 1);
+      next.cfAccessId[sizeof(next.cfAccessId) - 1] = '\0';
+    }
+    if (hasCfSecret && cfAccessSecret[0] != '\0') {
+      std::strncpy(next.cfAccessSecret, cfAccessSecret, sizeof(next.cfAccessSecret) - 1);
+      next.cfAccessSecret[sizeof(next.cfAccessSecret) - 1] = '\0';
+    }
+  }
+  if (hasMqttUser && mqttUser[0] == '\0') {
+    next.mqttUser[0] = '\0';
+    next.mqttPassword[0] = '\0';
+  } else {
+    if (hasMqttUser) {
+      std::strncpy(next.mqttUser, mqttUser, sizeof(next.mqttUser) - 1);
+      next.mqttUser[sizeof(next.mqttUser) - 1] = '\0';
+    }
+    if (hasMqttPassword && mqttPassword[0] != '\0') {
+      std::strncpy(next.mqttPassword, mqttPassword, sizeof(next.mqttPassword) - 1);
+      next.mqttPassword[sizeof(next.mqttPassword) - 1] = '\0';
+    }
+  }
+  const bool cfIdSet = next.cfAccessId[0] != '\0';
+  const bool cfSecretSet = next.cfAccessSecret[0] != '\0';
+  if (cfIdSet != cfSecretSet) {
+    return jsonResult(400, false, false, "Enter both Cloudflare Access values, or clear the client ID.");
+  }
+  if (next.mqttPassword[0] != '\0' && next.mqttUser[0] == '\0') {
+    return jsonResult(400, false, false, "Enter an MQTT user for the MQTT password.");
   }
 
   settingsSave(next);
@@ -421,6 +499,21 @@ void handleSettingsPost() {
   }
   if (server.hasArg("wifiPassword")) {
     addField(body, "wifiPassword", server.arg("wifiPassword"));
+  }
+  if (server.hasArg("haHost")) {
+    addField(body, "haHost", server.arg("haHost"));
+  }
+  if (server.hasArg("cfAccessId")) {
+    addField(body, "cfAccessId", server.arg("cfAccessId"));
+  }
+  if (server.hasArg("cfAccessSecret")) {
+    addField(body, "cfAccessSecret", server.arg("cfAccessSecret"));
+  }
+  if (server.hasArg("mqttUser")) {
+    addField(body, "mqttUser", server.arg("mqttUser"));
+  }
+  if (server.hasArg("mqttPassword")) {
+    addField(body, "mqttPassword", server.arg("mqttPassword"));
   }
   requireAndServe("POST", "/api/settings", body.c_str());
 }

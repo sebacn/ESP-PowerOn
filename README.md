@@ -44,11 +44,32 @@ ESP-PowerOn is a small PlatformIO sketch with its own web page, for a device tha
 
 The web interface has three pages, and every page asks for a login (HTTP basic authentication).
 
-- **Main** shows the date and time (after NTP sync), uptime, IP address, and Wi-Fi name. The power-LED indicator is green when the photoresistor reads the PC as on and gray when it reads off. **Enable PC** moves the servo to the push angle, holds it, then returns to the initial angle.
-- **Settings** sets the servo initial angle, push angle, and hold time in seconds. In access-point mode it also shows the Wi-Fi name and password used to join a network. SSL can be turned on after a PEM certificate and private key are uploaded. The login user and password are changed here too.
+- **Main** shows the date and time (after NTP sync), uptime, IP address, Wi-Fi name, and MQTT connection state. The power-LED indicator is green when the photoresistor reads the PC as on and gray when it reads off. **Enable PC** moves the servo to the push angle, holds it, then returns to the initial angle.
+- **Settings** sets the servo initial angle, push angle, and hold time in seconds. It also stores the Wi-Fi name and password, the Home Assistant MQTT host, the Cloudflare Access client ID and secret, and the MQTT user and password. SSL can be turned on after a PEM certificate and private key are uploaded. The login user and password are changed here too.
 - **Logs** is a time series of power-LED on/off changes and power-button pushes and releases. Newest events are first. Rows use the device clock once it has synced; earlier rows show uptime.
 
 On first boot the login is `admin` / `esp-poweron` unless `include/secrets.h` defines `AUTH_USER` and `AUTH_PASSWORD`. The device joins the Wi-Fi network saved on the settings page, or the one in `include/secrets.h` if nothing has been saved yet. If that network is missing, it starts an access point named `ESP-PowerOn` (password `esp-poweron`) at http://192.168.4.1.
+
+## Home Assistant over Cloudflare
+
+When a Home Assistant host is saved, the device connects with MQTT over secure WebSockets (`wss`, port 443). That is a normal HTTPS WebSocket upgrade, so Cloudflare can route it and apply Zero Trust rules. The handshake includes:
+
+- `CF-Access-Client-Id`
+- `CF-Access-Client-Secret`
+
+After the socket is open, the MQTT `CONNECT` packet sends the MQTT user and password to the broker. The WebSocket path defaults to `/mqtt`. Save `mqtt.example.com/ws` if the tunnel uses another path. Plain `ws://` is rejected.
+
+Home Assistant discovery is published for a PC-power binary sensor and an Enable PC button.
+
+| Topic | Direction | Payload |
+| --- | --- | --- |
+| `esp-poweron/power` | device to broker | `ON` or `OFF`, retained |
+| `esp-poweron/availability` | device to broker | `online` or `offline`, retained |
+| `esp-poweron/button` | broker to device | `PRESS` runs Enable PC |
+| `homeassistant/binary_sensor/esp_poweron_power/config` | discovery | retained JSON |
+| `homeassistant/button/esp_poweron_enable/config` | discovery | retained JSON |
+
+Point the Cloudflare tunnel at the broker's WebSocket listener and protect that hostname with a service token. The certificate is checked against the ESP32 CA bundle.
 
 HTTPS listens on port 443 when SSL is enabled and both PEM files are stored. HTTP on port 80 then redirects to HTTPS. A self-signed certificate makes the browser show a warning. Generate a test pair with:
 
@@ -93,6 +114,7 @@ The default board is `esp32dev` (classic ESP32). Change `board` in `platformio.i
 | `platformio.ini` | PlatformIO environment: ESP32, Arduino framework, ESP32Servo |
 | `src/main.cpp` | Startup |
 | `src/device.cpp` | Wi-Fi, servo, photoresistor, clock |
+| `src/mqtt_wss.cpp` | MQTT over WebSocket (WSS) with Cloudflare Access headers |
 | `src/web_ui.cpp` | Pages, settings, logs, basic authentication |
 | `src/https_server.cpp` | HTTPS server used when SSL is enabled |
 | `include/config.h` | Pins, default angles, LED threshold, timezone |

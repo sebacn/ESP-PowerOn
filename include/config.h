@@ -55,5 +55,26 @@ constexpr bool kPowerOnWhenAbove = true;
 // POSIX TZ string. UTC0 is UTC. Change this and rebuild for another zone.
 constexpr char kTimeZone[] = "UTC0";
 
+// Home Assistant MQTT through Cloudflare is MQTT-over-WebSocket on port 443.
+// A host without a path uses this path. Override it by saving host/path.
+constexpr char kMqttWebSocketPath[] = "/mqtt";
+constexpr uint16_t kMqttWebSocketPort = 443;
+
+#ifndef HA_HOST
+#define HA_HOST ""
+#endif
+#ifndef CF_ACCESS_CLIENT_ID
+#define CF_ACCESS_CLIENT_ID ""
+#endif
+#ifndef CF_ACCESS_CLIENT_SECRET
+#define CF_ACCESS_CLIENT_SECRET ""
+#endif
+#ifndef MQTT_USER
+#define MQTT_USER ""
+#endif
+#ifndef MQTT_PASSWORD
+#define MQTT_PASSWORD ""
+#endif
+
 constexpr size_t kEventLogCapacity = 48;
 constexpr size_t kPemMaxBytes = 8192;
