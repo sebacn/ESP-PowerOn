@@ -12,6 +12,7 @@
 
 #include "config.h"
 #include "event_log.h"
+#include "mqtt_wss.h"
 #include "settings_store.h"
 
 namespace {
@@ -223,6 +224,7 @@ void deviceLoop() {
   }
 
   publishState();
+  mqttLoop(WiFi.status() == WL_CONNECTED, ledStable >= 0, ledStable == 1);
 }
 
 DeviceSnapshot deviceSnapshot() {
